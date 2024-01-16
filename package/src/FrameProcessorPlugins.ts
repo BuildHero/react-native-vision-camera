@@ -2,8 +2,9 @@ import type { Frame, FrameInternal } from './Frame'
 import type { FrameProcessor } from './CameraProps'
 import { CameraRuntimeError } from './CameraError'
 
+import { createWorkletRuntime, makeMutable, runOnJS, runOnRuntime } from 'react-native-reanimated'
 // only import typescript types
-import type TWorklets from 'react-native-worklets-core'
+// import type TWorklets from 'react-native-worklets-core'
 import { CameraModule } from './NativeCameraModule'
 import { assertJSIAvailable } from './JSIHelper'
 
@@ -52,23 +53,32 @@ let throwJSError = (error: unknown): void => {
   throw error
 }
 
+function createSharedValue(initialValue: any) {
+  // @ts-ignore
+  // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment, prefer-rest-params, prefer-const
+  let oneWayReadsOnly = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : false
+  const result = makeMutable(initialValue, oneWayReadsOnly)
+  return result
+}
+
 try {
   assertJSIAvailable()
 
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { Worklets } = require('react-native-worklets-core') as typeof TWorklets
+  // const { Worklets } = require('react-native-worklets-core') as typeof TWorklets
 
-  const throwErrorOnJS = Worklets.createRunInJsFn((message: string, stack: string | undefined) => {
-    const error = new Error()
-    error.message = message
-    error.stack = stack
-    error.name = 'Frame Processor Error'
-    // @ts-expect-error this is react-native specific
-    error.jsEngine = 'VisionCamera'
-    // From react-native:
-    // @ts-ignore the reportFatalError method is an internal method of ErrorUtils not exposed in the type definitions
-    global.ErrorUtils.reportFatalError(error)
-  })
+  const throwErrorOnJS = (message: string, stack: string | undefined) =>
+    runOnJS(() => {
+      const error = new Error()
+      error.message = message
+      error.stack = stack
+      error.name = 'Frame Processor Error'
+      // @ts-expect-error this is react-native specific
+      error.jsEngine = 'VisionCamera'
+      // From react-native:
+      // @ts-ignore the reportFatalError method is an internal method of ErrorUtils not exposed in the type definitions
+      global.ErrorUtils.reportFatalError(error)
+    })
   throwJSError = (error) => {
     'worklet'
     const safeError = error as Error | undefined
@@ -76,24 +86,25 @@ try {
     throwErrorOnJS(message, safeError?.stack)
   }
 
-  isAsyncContextBusy = Worklets.createSharedValue(false)
-  const asyncContext = Worklets.createContext('VisionCamera.async')
-  runOnAsyncContext = Worklets.createRunInContextFn((frame: Frame, func: () => void) => {
-    'worklet'
-    try {
-      // Call long-running function
-      func()
-    } catch (e) {
-      // Re-throw error on JS Thread
-      throwJSError(e)
-    } finally {
-      // Potentially delete Frame if we were the last ref
-      const internal = frame as FrameInternal
-      internal.decrementRefCount()
+  isAsyncContextBusy = createSharedValue({ value: false })
+  const asyncContext = createWorkletRuntime('VisionCamera.async')
+  runOnAsyncContext = () =>
+    runOnRuntime(asyncContext, (frame: Frame, func: () => void) => {
+      'worklet'
+      try {
+        // Call long-running function
+        func()
+      } catch (e) {
+        // Re-throw error on JS Thread
+        throwJSError(e)
+      } finally {
+        // Potentially delete Frame if we were the last ref
+        const internal = frame as FrameInternal
+        internal.decrementRefCount()
 
-      isAsyncContextBusy.value = false
-    }
-  }, asyncContext)
+        isAsyncContextBusy.value = false
+      }
+    })
   hasWorklets = true
 } catch (e) {
   // Worklets are not installed, so Frame Processors are disabled.
