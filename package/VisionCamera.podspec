@@ -69,7 +69,4 @@ Pod::Spec.new do |s|
   s.dependency "React-Core"
   s.dependency "React-callinvoker"
 
-  if hasWorklets
-    s.dependency "react-native-worklets-core"
-  end
 end
